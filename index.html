@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Inventario Medidores</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <style>
+        :root { --navy: #0D2334; --red: #D70F27; }
+        body { background-color: #F1F5F9; font-family: ui-sans-serif, system-ui, sans-serif; }
+        
+        #camera-container {
+            display: none; position: fixed; inset: 0; z-index: 200;
+            background: black; overflow: hidden;
+        }
+        #scanner-container video { width: 100%; height: 100%; object-fit: cover; }
+        
+        .scan-overlay {
+            position: absolute; inset: 0; pointer-events: none;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+        }
+        .scan-region {
+            width: 75%; height: 25%; border: 3px solid white; border-radius: 1.5rem;
+            box-shadow: 0 0 0 4000px rgba(0,0,0,0.7); position: relative;
+        }
+        .scan-line {
+            position: absolute; width: 100%; height: 3px; background: var(--red);
+            top: 50%; left: 0; box-shadow: 0 0 15px var(--red);
+            animation: moveScan 2s infinite ease-in-out;
+        }
+        @keyframes moveScan { 0% { top: 10%; } 50% { top: 90%; } 100% { top: 10%; } }
+
+        .modal { display: none; position: fixed; inset: 0; background: rgba(13, 35, 52, 0.95); backdrop-filter: blur(8px); z-index: 100; align-items: center; justify-content: center; padding: 1.5rem; }
+        .modal-content { background: white; width: 100%; max-width: 480px; border-radius: 2.5rem; padding: 2rem; position: relative; }
+        
+        .badge { font-size: 10px; padding: 4px 10px; border-radius: 999px; font-weight: 800; text-transform: uppercase; display: inline-block; }
+        .bg-mono { background: #E0F2FE; color: #0369A1; }
+        .bg-trifa { background: #FEF3C7; color: #92400E; }
+        .bg-limit { background: #FEE2E2; color: #991B1B; }
+        .bg-indir { background: #F3E8FF; color: #6B21A8; }
+        .bg-conc { background: #DCFCE7; color: #166534; }
+        
+        input:focus { outline: 3px solid #D70F27; }
+        
+        .alert-box { animation: slideUp 0.3s ease-out; }
+        @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    </style>
+</head>
+<body class="pb-24">
+
+    <!-- Encabezado -->
+    <header class="bg-[#0D2334] text-white sticky top-0 z-50 shadow-2xl">
+        <div class="max-w-md mx-auto px-6 py-5 flex justify-between items-center">
+            <div>
+                <h1 class="text-xl font-black italic uppercase tracking-tighter text-white">Inventario Medidores</h1>
+                <div class="flex items-center gap-2">
+                    <span id="master-status-dot" class="h-2 w-2 rounded-full bg-red-500"></span>
+                    <p id="master-status-text" class="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Maestro no cargado</p>
+                </div>
+            </div>
+            <div class="flex gap-2">
+                <button onclick="exportCSV()" class="bg-emerald-500 p-2.5 rounded-2xl active:scale-90 transition-all shadow-lg text-white">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-md mx-auto p-4 space-y-6">
+        
+        <!-- Dashboard de Progreso -->
+        <div class="bg-white rounded-[2.5rem] p-6 shadow-sm border border-slate-100 space-y-4">
+            <div class="grid grid-cols-2 gap-4">
+                <div class="bg-slate-50 p-4 rounded-3xl border border-slate-100 text-center">
+                    <span class="text-[10px] font-black text-slate-400 uppercase tracking-wider">Auditados</span>
+                    <p id="count-checked" class="text-3xl font-black text-[#0D2334]">0</p>
+                </div>
+                <div class="bg-red-50 p-4 rounded-3xl border border-red-100 text-center">
+                    <span class="text-[10px] font-black text-red-400 uppercase tracking-wider">Pendientes</span>
+                    <p id="count-pending" class="text-3xl font-black text-red-600">0</p>
+                </div>
+            </div>
+            <div class="text-center">
+                <p class="text-[10px] font-bold text-slate-400 uppercase">Total Maestro: <span id="count-total" class="text-slate-700 font-black">0</span></p>
+            </div>
+            <button onclick="openRangeModal()" class="w-full py-3 bg-[#0D2334] text-white rounded-2xl text-[10px] font-black uppercase tracking-[0.2em] shadow-lg active:scale-[0.98] transition-all">
+                Control por Rango de Series
+            </button>
+        </div>
+
+        <!-- Escaneo Principal -->
+        <div class="bg-white rounded-[2.5rem] p-7 shadow-sm border border-slate-100 relative overflow-hidden">
+            <label class="block text-[11px] font-black text-slate-500 uppercase mb-3 ml-2 tracking-widest italic">Captura de Equipo Individual</label>
+            <div class="relative group">
+                <input type="text" id="manual-code" onkeypress="handleManualKeyPress(event)" placeholder="Serie o Escaneo..." 
+                    class="w-full bg-slate-100 border-none rounded-[1.5rem] px-6 py-6 font-mono text-2xl outline-none transition-all">
+                <button onclick="startScanner('normal')" class="absolute right-3 top-3 bottom-3 w-16 bg-[#D70F27] text-white rounded-[1.2rem] flex items-center justify-center shadow-xl active:scale-90 transition-all">
+                    <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="3.5"><path d="M3 7V5a2 2 0 0 1 2-2h2m10 0h2a2 2 0 0 1 2 2v2m0 10v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M8 12h8"/></svg>
+                </button>
+            </div>
+        </div>
+
+        <!-- Sección Maestro -->
+        <div class="bg-slate-200/50 rounded-[2rem] p-6 border-2 border-dashed border-slate-300 text-center transition-all hover:bg-slate-200">
+            <input type="file" id="csv-file" accept=".csv" class="hidden" onchange="handleFileUpload(event)">
+            <label for="csv-file" class="cursor-pointer block">
+                <p class="text-[11px] font-black uppercase text-slate-600 tracking-widest italic">Paso 1: Cargar Maestro CSV</p>
+                <p class="text-[9px] text-slate-400 mt-1 font-bold">Columna requerida: "Med Nº" o "Serie"</p>
+            </label>
+        </div>
+
+        <!-- Historial Auditado -->
+        <div class="bg-white rounded-[2.5rem] shadow-sm border border-slate-100 overflow-hidden">
+            <div class="bg-slate-50/80 px-7 py-5 border-b border-slate-100 flex justify-between items-center">
+                <h3 class="text-[11px] font-black text-[#0D2334] uppercase tracking-widest italic">Auditoría en Vivo</h3>
+                <button onclick="clearAll()" class="text-[9px] font-bold text-red-500 uppercase tracking-tighter">Reiniciar</button>
+            </div>
+            
+            <div class="max-h-[500px] overflow-y-auto custom-scrollbar">
+                <table class="w-full text-left">
+                    <tbody id="live-table-body" class="divide-y divide-slate-100"></tbody>
+                </table>
+                <div id="empty-state" class="py-20 text-center">
+                    <div class="opacity-10 mb-4">
+                        <svg class="mx-auto h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" /></svg>
+                    </div>
+                    <p class="text-[11px] text-slate-300 font-black uppercase tracking-widest italic">Sin registros de control</p>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- UI Scanner -->
+    <div id="camera-container">
+        <div id="scanner-container"></div>
+        <div class="scan-overlay">
+            <div class="scan-region"><div class="scan-line"></div></div>
+            <p class="text-white text-[11px] font-black uppercase tracking-[0.3em] mt-10 bg-black/60 px-6 py-3 rounded-full border border-white/20">Alinee Código de Barras</p>
+        </div>
+        <button onclick="stopScanner()" class="absolute bottom-12 left-1/2 -translate-x-1/2 bg-white text-[#0D2334] px-10 py-4 rounded-full font-black uppercase text-[10px] tracking-widest shadow-2xl">Cerrar Cámara</button>
+    </div>
+
+    <!-- Modal Rango -->
+    <div id="range-modal" class="modal">
+        <div class="modal-content space-y-8">
+            <div class="flex justify-between items-center">
+                <h3 class="font-black text-xl italic text-[#0D2334] tracking-tighter">Control por Bloque</h3>
+                <button onclick="closeRangeModal()" class="text-slate-300 text-xl font-bold p-2">✕</button>
+            </div>
+            
+            <div class="space-y-6">
+                <div>
+                    <label class="text-[10px] font-black uppercase text-slate-400 ml-2 mb-2 block tracking-widest">Desde la Serie</label>
+                    <div class="flex gap-2">
+                        <input type="text" id="range-start" class="flex-1 bg-slate-100 rounded-2xl px-5 py-5 font-mono text-xl outline-none" placeholder="00000000">
+                        <button onclick="startScanner('range-start')" class="w-16 bg-slate-800 text-white rounded-2xl flex items-center justify-center">
+                            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="3"><path d="M3 7V5a2 2 0 0 1 2-2h2m10 0h2a2 2 0 0 1 2 2v2m0 10v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/></svg>
+                        </button>
+                    </div>
+                </div>
+                <div>
+                    <label class="text-[10px] font-black uppercase text-slate-400 ml-2 mb-2 block tracking-widest">Hasta la Serie</label>
+                    <div class="flex gap-2">
+                        <input type="text" id="range-end" class="flex-1 bg-slate-100 rounded-2xl px-5 py-5 font-mono text-xl outline-none" placeholder="00000000">
+                        <button onclick="startScanner('range-end')" class="w-16 bg-slate-800 text-white rounded-2xl flex items-center justify-center">
+                            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="3"><path d="M3 7V5a2 2 0 0 1 2-2h2m10 0h2a2 2 0 0 1 2 2v2m0 10v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/></svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <button onclick="processRangeAudit()" class="w-full bg-[#D70F27] text-white py-6 rounded-3xl font-black text-[11px] uppercase tracking-[0.2em] shadow-2xl shadow-red-200 active:scale-95 transition-all">Ejecutar Auditoría Grupal</button>
+        </div>
+    </div>
+
+    <!-- Notificaciones / Alertas -->
+    <div id="toast" class="fixed bottom-10 left-1/2 -translate-x-1/2 px-10 py-5 rounded-[2rem] text-[10px] font-black text-white shadow-2xl transition-all opacity-0 translate-y-10 z-[300] uppercase tracking-[0.2em] text-center min-w-[320px] backdrop-blur-md"></div>
+
+    <script>
+        const RULES = [
+            { id: 'mono_clou', type: 'Monofásico Clou', prefix: '70', len: 8, badge: 'bg-mono' },
+            { id: 'mono_nan', type: 'Monofásico Nansen', prefix: '71', len: 8, badge: 'bg-mono' },
+            { id: 'mono_std', type: 'Monofásico', prefix: '7', len: 7, badge: 'bg-mono' },
+            { id: 'trifa_clou', type: 'Trifásico Clou', prefix: '90', len: 8, badge: 'bg-trifa' },
+            { id: 'trifa_nan', type: 'Trifásico Nansen', prefix: '91', len: 8, badge: 'bg-trifa' },
+            { id: 'trifa_std', type: 'Trifásico', prefix: '9', len: 7, badge: 'bg-trifa' },
+            { id: 'limit', type: 'Limitador', prefix: '40', len: 8, badge: 'bg-limit' },
+            { id: 'indir_clou', type: 'Indirecto Clou', prefix: '81', len: 8, badge: 'bg-indir' },
+            { id: 'indir_nan', type: 'Indirecto Nansen', prefix: '80', len: 8, badge: 'bg-indir' },
+            { id: 'conc', type: 'Concentrador', prefix: '60', len: 8, badge: 'bg-conc' }
+        ];
+
+        let inventory = JSON.parse(localStorage.getItem('med_inv_app_v2')) || [];
+        let scannerMode = 'normal';
+
+        function showAlert(msg, type = 'success') {
+            const toast = document.getElementById('toast');
+            if (!toast) return;
+            const bgMap = {
+                success: 'bg-emerald-500/90',
+                warning: 'bg-amber-500/90',
+                error: 'bg-red-600/90',
+                info: 'bg-[#0D2334]/90'
+            };
+            toast.textContent = msg;
+            toast.className = `fixed bottom-10 left-1/2 -translate-x-1/2 px-10 py-5 rounded-[2rem] text-[10px] font-black text-white shadow-2xl transition-all z-[300] uppercase tracking-[0.2em] text-center min-w-[320px] backdrop-blur-md ${bgMap[type] || bgMap.info}`;
+            toast.style.opacity = "1"; toast.style.transform = "translateX(-50%) translateY(0)";
+            setTimeout(() => { toast.style.opacity = "0"; toast.style.transform = "translateX(-50%) translateY(20px)"; }, 3000);
+        }
+
+        function classify(code) {
+            const s = code.toString().trim();
+            const hit = RULES.filter(r => s.startsWith(r.prefix) && s.length === r.len)
+                             .sort((a,b) => b.prefix.length - a.prefix.length)[0];
+            return hit || { type: 'Desconocido', badge: 'bg-slate-200 text-slate-500' };
+        }
+
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if(!file) return;
+            Papa.parse(file, {
+                header: true, skipEmptyLines: true, delimiter: ";",
+                complete: (results) => {
+                    if(!results.data.length) return showAlert("Archivo vacío", "error");
+                    
+                    const keys = Object.keys(results.data[0]);
+                    const keySerie = keys.find(k => 
+                        k.toLowerCase().includes('med n') || 
+                        k.toLowerCase().includes('serie') || 
+                        k.toLowerCase().includes('medidor')
+                    ) || keys[0];
+
+                    const keyEstado = keys.find(k => k.toLowerCase().includes('estado')) || "";
+                    const keyHora = keys.find(k => k.toLowerCase().includes('hora')) || "";
+                    
+                    const masterData = results.data
+                        .filter(r => r[keySerie])
+                        .map(r => {
+                            const valEstado = keyEstado ? r[keyEstado].toString().trim().toUpperCase() : "PENDIENTE";
+                            const isHallado = valEstado === "HALLADO";
+                            
+                            return {
+                                serie: r[keySerie].toString().trim(),
+                                status: isHallado ? 'checked' : 'pending',
+                                timestamp: isHallado ? (r[keyHora] || new Date().toLocaleTimeString()) : null,
+                                fromCSV: true
+                            };
+                        });
+
+                    // Sincronizar con datos locales previos para no perder registros que no estaban en el CSV nuevo
+                    const manualHallazgos = inventory.filter(i => i.status === 'checked' && !masterData.some(md => md.serie === i.serie));
+                    
+                    inventory = [...masterData, ...manualHallazgos];
+                    updateUI();
+                    showAlert(`Maestro: ${masterData.length} equipos cargados`, "info");
+                }
+            });
+        }
+
+        function startScanner(mode) {
+            scannerMode = mode;
+            document.getElementById('camera-container').style.display = 'block';
+            Quagga.init({
+                inputStream: { name: "Live", type: "LiveStream", target: document.querySelector('#scanner-container'), constraints: { facingMode: "environment" } },
+                decoder: { readers: ["code_128_reader", "code_39_reader", "ean_reader"] }
+            }, (err) => { if (!err) Quagga.start(); });
+
+            Quagga.onDetected((data) => {
+                const code = data.codeResult.code;
+                if(navigator.vibrate) navigator.vibrate([100, 50, 100]);
+                
+                if (scannerMode === 'normal') {
+                    processCode(code);
+                    stopScanner();
+                } else if (scannerMode === 'range-start') {
+                    document.getElementById('range-start').value = code;
+                    stopScanner();
+                    setTimeout(() => startScanner('range-end'), 400);
+                } else if (scannerMode === 'range-end') {
+                    document.getElementById('range-end').value = code;
+                    stopScanner();
+                }
+            });
+        }
+
+        function stopScanner() { 
+            if (typeof Quagga !== 'undefined') Quagga.stop(); 
+            document.getElementById('camera-container').style.display = 'none'; 
+        }
+
+        function handleManualKeyPress(e) {
+            if (e.key === 'Enter') {
+                processCode(e.target.value);
+                e.target.value = '';
+            }
+        }
+
+        function processCode(code, isSilent = false) {
+            code = code.toString().trim();
+            if (!code) return false;
+
+            const idx = inventory.findIndex(m => m.serie === code);
+            const existsInInventory = idx !== -1;
+            
+            // Verificación de duplicados: No permitir si ya está auditado
+            if (existsInInventory && inventory[idx].status === 'checked') {
+                if(!isSilent) showAlert(`Error: ${code} ya auditado`, "error");
+                return false;
+            }
+
+            if (existsInInventory) {
+                // Estaba pendiente en el maestro
+                inventory[idx].status = 'checked';
+                inventory[idx].timestamp = new Date().toLocaleTimeString();
+                if(!isSilent) showAlert(`OK: ${code} en Maestro`, "success");
+            } else {
+                // No estaba en el maestro (Hallazgo manual)
+                inventory.push({
+                    serie: code,
+                    status: 'checked',
+                    timestamp: new Date().toLocaleTimeString(),
+                    fromCSV: false
+                });
+                if(!isSilent) showAlert(`Hallazgo: ${code} NO está en Maestro`, "warning");
+            }
+
+            updateUI();
+            return true;
+        }
+
+        function processRangeAudit() {
+            const sVal = document.getElementById('range-start').value.trim();
+            const eVal = document.getElementById('range-end').value.trim();
+            if(!sVal || !eVal) return showAlert("Complete el rango", "error");
+
+            const startNum = parseInt(sVal);
+            const endNum = parseInt(eVal);
+            const pad = sVal.length;
+
+            if(isNaN(startNum) || isNaN(endNum) || endNum < startNum) return showAlert("Límites inválidos", "error");
+
+            let hits = 0;
+            let hallazgos = 0;
+            let omitidos = 0;
+
+            for(let i = startNum; i <= endNum; i++) {
+                const serie = i.toString().padStart(pad, '0');
+                const idx = inventory.findIndex(m => m.serie === serie);
+                
+                if (idx !== -1) {
+                    if (inventory[idx].status !== 'checked') {
+                        inventory[idx].status = 'checked';
+                        inventory[idx].timestamp = new Date().toLocaleTimeString();
+                        hits++;
+                    } else {
+                        omitidos++;
+                    }
+                } else {
+                    inventory.push({
+                        serie: serie,
+                        status: 'checked',
+                        timestamp: new Date().toLocaleTimeString(),
+                        fromCSV: false
+                    });
+                    hallazgos++;
+                }
+            }
+
+            updateUI();
+            closeRangeModal();
+            showAlert(`Rango: ${hits} Maestro / ${hallazgos} Hallazgos (${omitidos} ya leídos)`, "info");
+        }
+
+        function updateUI() {
+            localStorage.setItem('med_inv_app_v2', JSON.stringify(inventory));
+            
+            const auditados = inventory.filter(m => m.status === 'checked');
+            const maestro = inventory.filter(m => m.fromCSV);
+            const pendientes = maestro.filter(m => m.status === 'pending');
+
+            const elChecked = document.getElementById('count-checked');
+            const elPending = document.getElementById('count-pending');
+            const elTotal = document.getElementById('count-total');
+            
+            if (elChecked) elChecked.textContent = auditados.length;
+            if (elPending) elPending.textContent = pendientes.length;
+            if (elTotal) elTotal.textContent = maestro.length;
+
+            const dot = document.getElementById('master-status-dot');
+            const text = document.getElementById('master-status-text');
+            if(maestro.length > 0 && dot && text) {
+                dot.className = "h-2 w-2 rounded-full bg-emerald-500";
+                text.textContent = "Maestro Cargado";
+            }
+
+            const tbody = document.getElementById('live-table-body');
+            const empty = document.getElementById('empty-state');
+            if (empty) empty.style.display = auditados.length ? 'none' : 'block';
+            
+            if (tbody) {
+                tbody.innerHTML = auditados.slice().reverse().slice(0, 40).map(m => {
+                    const typeInfo = classify(m.serie);
+                    const maestroTag = m.fromCSV 
+                        ? '<span class="text-[8px] font-black text-emerald-500 uppercase">En Maestro</span>'
+                        : '<span class="text-[8px] font-black text-amber-500 uppercase">Hallazgo</span>';
+                    
+                    return `
+                    <tr class="alert-box">
+                        <td class="px-7 py-5">
+                            <p class="font-mono font-black text-lg text-[#0D2334] tracking-tighter">${m.serie}</p>
+                            ${maestroTag}
+                        </td>
+                        <td class="px-7 py-5">
+                            <span class="badge ${typeInfo.badge}">${typeInfo.type}</span>
+                            <p class="text-[8px] text-slate-400 mt-1 font-bold">${m.timestamp || '--:--'}</p>
+                        </td>
+                        <td class="px-7 py-5 text-right">
+                            <button onclick="revert('${m.serie}')" class="text-slate-300 hover:text-red-500 transition-colors p-2">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                            </button>
+                        </td>
+                    </tr>`;
+                }).join('');
+            }
+        }
+
+        function revert(serie) {
+            const item = inventory.find(i => i.serie === serie);
+            if(!item) return;
+            if(item.fromCSV) { item.status = 'pending'; item.timestamp = null; }
+            else { inventory = inventory.filter(i => i.serie !== serie); }
+            updateUI();
+            showAlert("Registro eliminado", "info");
+        }
+
+        function exportCSV() {
+            if(!inventory.some(m => m.status === 'checked')) return showAlert("No hay datos auditados", "error");
+            const exportData = inventory
+                .filter(m => m.status === 'checked')
+                .map(m => ({
+                    Serie: m.serie,
+                    "Estado Auditoria": "HALLADO",
+                    "Hora Registro": m.timestamp,
+                    "En Maestro CSV": m.fromCSV ? "SI" : "NO",
+                    Tipo: classify(m.serie).type,
+                    Clasificacion: classify(m.serie).id.split('_')[0].toUpperCase()
+                }));
+
+            const csv = Papa.unparse(exportData, { delimiter: ";" });
+            const blob = new Blob(["\ufeff" + csv], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(blob);
+            link.download = `Medidores_Auditados_${new Date().toISOString().split('T')[0]}.csv`;
+            link.click();
+        }
+
+        function clearAll() {
+            if(confirm("¿Seguro que desea reiniciar? Se borrarán los controles y el maestro cargado.")) {
+                inventory = [];
+                localStorage.removeItem('med_inv_app_v2');
+                location.reload();
+            }
+        }
+
+        function openRangeModal() { 
+            const el = document.getElementById('range-modal');
+            if (el) el.style.display = 'flex'; 
+        }
+        function closeRangeModal() { 
+            const el = document.getElementById('range-modal');
+            if (el) el.style.display = 'none';
+            const rs = document.getElementById('range-start');
+            const re = document.getElementById('range-end');
+            if (rs) rs.value = '';
+            if (re) re.value = '';
+        }
+
+        window.onload = () => updateUI();
+    </script>
+</body>
+</html>
